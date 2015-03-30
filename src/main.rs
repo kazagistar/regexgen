@@ -1,8 +1,4 @@
 #![feature(core)]
-requires newline
-requires end
-requires word
-requires space
 
 extern crate regex;
 
@@ -10,7 +6,7 @@ use std::collections::HashSet;
 use std::old_io;
 
 use regex::Regex;
-use parse::{Flags, FLAG_EMPTY, FLAG_NEGATE,};
+//use regex::parse::{Flags, FLAG_EMPTY, FLAG_NEGATED,};
 use regex::native::{
 	OneChar, CharClass, Any, Save, Jump, Split,
 	Match, EmptyBegin, EmptyEnd, EmptyWordBoundary, Dynamic,
@@ -21,7 +17,7 @@ at that state. Thus, for every state in the NFA, there is really a number of "mo
 states, which we identify by this flag, indicating an additional constraint on how one can
 exit that state. Ending only matches "match", etc. */
 enum TransitionMod { Normal, Newline, Ending, Word, Space, Empty};
-
+/*
 fn nextState(re: Vec<Inst>, state: Vec<(usize, TransitionMod)>) -> (HashMap<char, usize>, Vec<Vec<(usize, bool)>>) {
 	let (start, _) = state[0];
 	let mut current = 0;
@@ -64,7 +60,57 @@ fn nextState(re: Vec<Inst>, state: Vec<(usize, TransitionMod)>) -> (HashMap<char
 			_ => ,
 		};
 	}
+}*/
+
+type NFA = Vec<Inst>;
+type NFAState = usize;
+
+fn combineTM(a: TransitionMod, b: TransitionMod) -> TransitionMod {
+	if a == b { return a; };
+	match (a, b) {
+		(Newline, Space) => Newline,
+		(Space, Newline) => Newline,
+		(Normal, x) => x,
+		(x, Normal) => x,
+		default => Nothing,
+	}	
 }
+
+// Finds all paths that lead to non-empty states, using a DFS
+fn fetchPaths(re: NFA, root: NFAState) -> Vec<(TransistionMod, NFAState)> {
+	let mut finished: Vec<(TransitionMod, NFAState)> = vec!{};
+	let mut seen: Vec<(NFAState)> = vec!{};
+	let mut queue: Vec<(TransitionMod, NFAState)> = vec!{(Normal, root)};
+	
+	while (queue.len() != 0) {
+		let (mod, state) = queue.pop();
+		seen.push(state);
+		match re[state] {
+			Match => { finished.push(mod, state); }
+			OneChar(c,f) => { finished.push(mod, state); },
+			CharClass(_,f) => format!("CharClass(?,{})",f),
+			Any(_) => format!("Any"),
+			EmptyBegin(_) => format!("Begin"),
+			EmptyEnd(_) => format!("End"),
+			EmptyWordBoundary(_) => format!("WordBoundry"),
+			Save(i) => format!("Save({})", i),
+			Jump(i) => format!("Jump({})", i),
+			Split(i1, i2) => format!("Split({},{})", i1, i2),
+		}
+	}
+}
+
+// 1) Filter match chars in multistate by the state's TransitionMod
+// 2) Find all cycle-free paths
+// 3) Collapse modifiers down each path
+
+foreach startpoint in (map multistate state by getting states after)
+	foreach cycle in the cycle-free paths following the current node:
+		collapse path using "intersection" monoid
+		filter if invalid start
+		filter invalid ends
+
+
 
 fn main() {
 	loop {
