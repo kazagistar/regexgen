@@ -1,144 +1,120 @@
+#![feature(collections)]
 #![feature(core)]
+#![feature(custom_attribute)]
+#![feature(plugin)]
+#![plugin(quickcheck_macros)]
 
-extern crate regex;
+extern crate quickcheck;
 
-use std::collections::HashSet;
-use std::old_io;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::num::Int;
+use std::collections::Bound::{Unbounded, Included, Excluded};
+use std::fmt::Debug;
+use std::iter::{FromIterator, IntoIterator};
+use std::cmp::{min, max};
+use quickcheck::{Arbitrary, Gen};
 
-use regex::Regex;
-//use regex::parse::{Flags, FLAG_EMPTY, FLAG_NEGATED,};
-use regex::native::{
-	OneChar, CharClass, Any, Save, Jump, Split,
-	Match, EmptyBegin, EmptyEnd, EmptyWordBoundary, Dynamic,
-};
-
-/* The "empty" match types cause the matching behavior of a state to depend on how you arrive
-at that state. Thus, for every state in the NFA, there is really a number of "modified"
-states, which we identify by this flag, indicating an additional constraint on how one can
-exit that state. Ending only matches "match", etc. */
-enum TransitionMod { Normal, Newline, Ending, Word, Space, Empty};
-/*
-fn nextState(re: Vec<Inst>, state: Vec<(usize, TransitionMod)>) -> (HashMap<char, usize>, Vec<Vec<(usize, bool)>>) {
-	let (start, _) = state[0];
-	let mut current = 0;
-	let mut queue = vec!{(start, Normal)};
-	while current < queue.size() {
-		let (cstate, m) = queue[current];
-		let (a1, a2) = match re[cstate] {
-			Jump(i) => (Some((i, m)), None),
-			Split(i1, i2) => (Some((i1, m)), Some((i2, m))),
-			Save(_) => (Some(cstate+1, m), None),
-			EmptyBegin(flags) => {
-				(Some(cstate+1, m), None)
-			},
-			EmptyEnd(flags) => {
-				(Some(cstate+1, m), None)
-			},
-			EmptyWordBoundry(flags) => {
-				nm = if	flags & FLAG_NEGATE == FLAGS_EMPTY {
-					match m {
-						Normal => Word,
-						Newline => Empty,
-						Ending => Empty,
-						Word => Word,
-						Space => Empty,
-						Empty => Empty,
-					}
-				}
-				else {
-					match m {
-						Normal => Space,
-						Newline => Newline,
-						Ending => Ending,
-						Word => Empty,
-						Space => Space,
-						Empty => Empty,
-					}
-				};
-				(Some(cstate+1, nm), None)
-			},
-			_ => ,
-		};
-	}
-}*/
-
-type NFA = Vec<Inst>;
-type NFAState = usize;
-
-fn combineTM(a: TransitionMod, b: TransitionMod) -> TransitionMod {
-	if a == b { return a; };
-	match (a, b) {
-		(Newline, Space) => Newline,
-		(Space, Newline) => Newline,
-		(Normal, x) => x,
-		(x, Normal) => x,
-		default => Nothing,
-	}	
+#[derive(Debug, Clone)]
+struct MarkedRangeSet<T,M> {
+	ranges: BTreeMap<T, BTreeSet<M>>,
 }
 
-// Finds all paths that lead to non-empty states, using a DFS
-fn fetchPaths(re: NFA, root: NFAState) -> Vec<(TransistionMod, NFAState)> {
-	let mut finished: Vec<(TransitionMod, NFAState)> = vec!{};
-	let mut seen: Vec<(NFAState)> = vec!{};
-	let mut queue: Vec<(TransitionMod, NFAState)> = vec!{(Normal, root)};
+impl<T, M> Arbitrary for MarkedRangeSet<T,M> where T: Int + Arbitrary, M: Ord + Copy + Clone + Arbitrary {
+	fn arbitrary<G: Gen>(g: &mut G) -> MarkedRangeSet<T,M> {
+		let inputs: Vec<(T,T,M)> = Arbitrary::arbitrary(g);
+		let mut result = MarkedRangeSet::new();
+		for (lo, hi, m) in inputs.iter().cloned().map(|(s1, s2, m)| (min(s1,s2), max(s1,s2), m)) {
+			result.add_range(lo, hi, m);
+		}
+		result
+	}
+}
+
+impl <T,M> MarkedRangeSet<T,M> where T: Int, M: Ord + Copy + Clone {
+	pub fn new() -> MarkedRangeSet<T,M> {
+		let mut set = MarkedRangeSet { ranges: BTreeMap::new() };
+		set.ranges.insert(<T as Int>::min_value(), BTreeSet::new());
+		set
+	}
 	
-	while (queue.len() != 0) {
-		let (mod, state) = queue.pop();
-		seen.push(state);
-		match re[state] {
-			Match => { finished.push(mod, state); }
-			OneChar(c,f) => { finished.push(mod, state); },
-			CharClass(_,f) => format!("CharClass(?,{})",f),
-			Any(_) => format!("Any"),
-			EmptyBegin(_) => format!("Begin"),
-			EmptyEnd(_) => format!("End"),
-			EmptyWordBoundary(_) => format!("WordBoundry"),
-			Save(i) => format!("Save({})", i),
-			Jump(i) => format!("Jump({})", i),
-			Split(i1, i2) => format!("Split({},{})", i1, i2),
+	pub fn add_range(&mut self, lo: T, hi: T, mark: M) {
+		{
+			let mut cut = |location: T| {
+				if !self.ranges.contains_key(&location) {
+					let marks = {
+						let (_, prev) = self.ranges.range(Unbounded, Excluded(&location)).next_back()
+								                .expect("MarkedRangeSet somehow lost its initial value!");
+						prev.clone()
+					};
+					self.ranges.insert(location, marks);
+				}
+			};
+			cut(lo);
+			cut(hi+<T as Int>::one());
+		}
+		
+		for (_, mset) in self.ranges.range_mut(Included(&lo), Included(&hi)) {
+			mset.insert(mark.clone());
 		}
 	}
+	/*
+	fn union(&self, &other: &MarkedRangeSet<T,M>) -> MarkedRangeSet<T,M> {
+		self.chain(other).collect();
+	}
+	*/
 }
 
-// 1) Filter match chars in multistate by the state's TransitionMod
-// 2) Find all cycle-free paths
-// 3) Collapse modifiers down each path
 
-foreach startpoint in (map multistate state by getting states after)
-	foreach cycle in the cycle-free paths following the current node:
-		collapse path using "intersection" monoid
-		filter if invalid start
-		filter invalid ends
+/*0
+impl<T,M> FromIterator<((T,T),M)> for MarkedRangeSet<T,M> where T: Int, M: Ord + Copy + Clone {
+	fn from_iter<I>(iterator: I) -> Self where I: IntoIterator {
+		let mut created = MarkedRangeSet::new();
+		for ((lo, hi), mark) in iterator {
+			created.add_range(lo, hi, mark);
+		}
+		created
+	}
+}
+*/
 
+// verifies that ranges dont repeat
+#[quickcheck]
+fn qc_unique_ranges(rs: MarkedRangeSet<u32, bool>) -> bool {
+	let mut checker = BTreeSet::new();
+	for val in rs.ranges.keys() {
+		if checker.contains(val) {
+			return false;
+		};
+		checker.insert(val);
+	}
+	return true;
+}
 
+// verifies that added ranges are actually marked
+#[quickcheck]
+fn qc_range_added(adds: Vec<(u32, u32, u8)>) -> bool {
+	let mut rs = MarkedRangeSet::new();
+	let sorted: Vec<(u32, u32, u8)> = adds.iter().cloned().map(|(s1, s2, m)| (min(s1,s2), max(s1,s2), m)).collect();
+	for (lo, hi, m) in sorted.clone() {
+		rs.add_range(lo, hi, m);
+	}
+	
+	for (lo, hi, m) in sorted {
+		for (_, set) in rs.ranges.range(Included(&lo), Included(&hi)) {
+			if !set.contains(&m) {
+				return false;
+			};
+		}
+	}
+	return true;
+}
 
 fn main() {
-	loop {
-		print!("\n> ");
-		let input = old_io::stdin().read_line().ok().expect("Failed to read line");
-		let r = Regex::new(&input[..input.len()-1]);
-		match r {
-			Err(e) => println!("Broken: {}", e),
-			Ok(Regex::Dynamic(r)) => {
-				let prog = r.prog.insts;
-				for (line, command) in prog.iter().enumerate() {
-			
-					let r = match *command {
-						Match => format!("Match"),
-						OneChar(c,f) => format!("OneChar({},{})", c, f),
-						CharClass(_,f) => format!("CharClass(?,{})",f),
-						Any(_) => format!("Any"),
-						EmptyBegin(_) => format!("Begin"),
-						EmptyEnd(_) => format!("End"),
-						EmptyWordBoundary(_) => format!("WordBoundry"),
-						Save(i) => format!("Save({})", i),
-						Jump(i) => format!("Jump({})", i),
-						Split(i1, i2) => format!("Split({},{})", i1, i2),
-					};
-					println!("{}: {}", line, r);
-				}
-			}
-			_ => println!("blarf"),
-		}
-	}
+	let mut r = MarkedRangeSet::new();
+	r.add_range(1,3, "R1");
+	r.add_range(1,3, "R2");
+	r.add_range(4,6, "R3");
+	println!("{:?}",r);
 }
+

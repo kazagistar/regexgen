@@ -5,4 +5,6 @@ version = "0.0.1"
 authors = ["jgedeon"]
 
 [dependencies]
-regex = "0.1.14"
+regex = "*"
+quickcheck = "*"
+quickcheck_macros = "*"
